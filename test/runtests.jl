@@ -9,8 +9,9 @@ include("utilities.jl")
         include("infra/test_timeManager.jl")
     end
 
-    @testset "Operator/Kernel Tests" begin 
+    @testset "Operator/Numerical Tests" begin 
         include("ocn/test_Operators.jl")
+        include("ocn/test_Diagnostics.jl")
     end
     
     @testset "Enzyme Tests" begin 
