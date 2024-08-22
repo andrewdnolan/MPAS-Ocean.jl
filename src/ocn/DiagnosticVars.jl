@@ -21,6 +21,10 @@ mutable struct DiagnosticVars{F <: AbstractFloat, FV2 <: AbstractArray{F,2}}
     # dim: (nVertLevels, nVertices)
     relativeVorticity::FV2
 
+    # var: kinetic energy of horizonal velocity on cells [m^{2} s^{-2}]
+    # dim: (nVertLevels, nCells)
+    kineticEnergyCell::FV2
+
     #= Performance Note: 
     # ###########################################################
     #  While these can be stored as diagnostic variales I don't 
@@ -43,19 +47,16 @@ mutable struct DiagnosticVars{F <: AbstractFloat, FV2 <: AbstractArray{F,2}}
     # dim: (nVertLevels, nEdges)
     tangentialVelocity::Array{F, 2}
 
-    # var: kinetic energy of horizonal velocity on cells [m^{2} s^{-2}]
-    # dim: (nVertLevels, nCells)
-    kineticEnergyCell::Array{F, 2}
-
     =# 
 
     function DiagnosticVars(layerThicknessEdge::AT2D, 
                             thicknessFlux::AT2D, 
                             velocityDivCell::AT2D, 
-                            relativeVorticity::AT2D) where {AT2D}
+                            relativeVorticity::AT2D, 
+                            kineticEnergyCell::AT2D) where {AT2D}
         # pack all the arguments into a tuple for type and backend checking
         args = (layerThicknessEdge, thicknessFlux,
-                velocityDivCell, relativeVorticity)
+                velocityDivCell, relativeVorticity, kineticEnergyCell)
         
         # check the type names; irrespective of type parameters
         # (e.g. `Array` instead of `Array{Float64, 1}`)
@@ -68,7 +69,8 @@ mutable struct DiagnosticVars{F <: AbstractFloat, FV2 <: AbstractArray{F,2}}
         new{type, AT2D}(layerThicknessEdge,
                         thicknessFlux,
                         velocityDivCell,
-                        relativeVorticity)
+                        relativeVorticity, 
+                        kineticEnergyCell)
     end
 end 
  
@@ -87,22 +89,25 @@ function DiagnosticVars(config::GlobalConfig, Mesh::Mesh; backend=KA.CPU())
     # the `Config` or requested by the `streams` will be activated. 
     
     # create zero vectors to store diagnostic variables, on desired backend
-    thicknessFlux = KA.zeros(backend, Float64, nVertLevels, nEdges) 
-    velocityDivCell = KA.zeros(backend, Float64, nVertLevels, nCells)
-    relativeVorticity = KA.zeros(backend, Float64, nVertLevels, nVertices)
+    thicknessFlux      = KA.zeros(backend, Float64, nVertLevels, nEdges) 
+    velocityDivCell    = KA.zeros(backend, Float64, nVertLevels, nCells)
+    kineticEnergyCell  = KA.zeros(backend, Float64, nVertLevels, nCells)
+    relativeVorticity  = KA.zeros(backend, Float64, nVertLevels, nVertices)
     layerThicknessEdge = KA.zeros(backend, Float64, nVertLevels, nEdges) 
 
     DiagnosticVars(layerThicknessEdge,
                    thicknessFlux,
                    velocityDivCell,
-                   relativeVorticity)
+                   relativeVorticity, 
+                   kineticEnergyCell)
 end 
 
 function Adapt.adapt_structure(to, x::DiagnosticVars)
     return DiagnosticVars(Adapt.adapt(to, x.layerThicknessEdge),
                           Adapt.adapt(to, x.thicknessFlux), 
                           Adapt.adapt(to, x.velocityDivCell),
-                          Adapt.adapt(to, x.relativeVorticity))
+                          Adapt.adapt(to, x.relativeVorticity),
+                          Adapt.adapt(to, x.kineticEnergyCell))
 end
 
 function diagnostic_compute!(Mesh::Mesh,
@@ -113,15 +118,9 @@ function diagnostic_compute!(Mesh::Mesh,
     calculate_thicknessFlux!(Diag, Prog, Mesh; backend = backend)
     calculate_velocityDivCell!(Diag, Prog, Mesh; backend = backend)
     calculate_relativeVorticity!(Diag, Prog, Mesh; backend = backend)
+    calculate_kineticEnergyCell!(Diag, Prog, Mesh; backend = backend)
     calculate_layerThicknessEdge!(Diag, Prog, Mesh; backend = backend)
 end 
-
-#= Preformance Note:
-   -----------------------------------------------------------------------
-    Instead of `@unpack`ing and `@pack`ing the diagnostic field within the 
-    `diagnostic_compute!` function would it be better to use a `@view`, 
-    thereby reducing the array allocations? 
-=# 
 
 function calculate_layerThicknessEdge!(Diag::DiagnosticVars,
                                        Prog::PrognosticVars,
@@ -204,4 +203,91 @@ function calculate_relativeVorticity!(Diag::DiagnosticVars,
     CurlOnVertex!(relativeVorticity, Prog.normalVelocity[end], Mesh; backend=backend)
 
     @pack! Diag = relativeVorticity
+end
+
+
+function calculate_kineticEnergyCell!(Diag::DiagnosticVars, 
+                                      Prog::PrognosticVars, 
+                                      Mesh::Mesh;
+                                      backend = KA.CPU())
+
+    # let's add scratch array to diag struct, but we'll need the zero out
+    # function from joes branch
+    normalVelocity = Prog.normalVelocity[:,:,end]
+    scratchEdge    = deepcopy(normalVelocity)
+    
+    @unpack kineticEnergyCell = Diag
+
+    calculate_kineticEnergyCell(kineticEnergyCell,
+                                scratchEdge,           
+                                VecEdge,
+                                Mesh::Mesh;
+                                backend = KA.CPU())
+
+    @pack! Diag = kineticEnergyCell 
+end
+
+# probably should check the size/backend/eltypes of array args here
+function calculate_kineticEnergyCell!(kineticEnergyCell,
+                                      scratchEdge,
+                                      VecEdge,
+                                      Mesh::Mesh;
+                                      backend = KA.CPU())
+    
+    @unpack HorzMesh, VertMesh = Mesh    
+    @unpack PrimaryCells, DualCells, Edges = HorzMesh
+    
+    @unpack nVertLevels = VertMesh 
+    @unpack dvEdge, dcEdge, nEdges = Edges
+    @unpack nCells, nEdgesOnCell, edgesOnCell, areaCell = PrimaryCells
+    
+    kernel1! = KineticEnergyCell_P1!(backend)
+    kernel2! = KineticEnergyCell_P2!(backend)
+
+    kernel1!(scratchEdge,
+             VecEdge,
+             dvEdge,
+             dcEdge,
+             workgroupsize=64,
+             ndrange=(nEdges, nVertLevels))
+
+    kernel2!(kineticEnergyCell,
+             scratchEdge,
+             nEdgesOnCell,
+             edgesOnCell,
+             areaCell,
+             workgroupsize=32,
+             ndrange=(nCells, nVertLevels))
+
+    KA.synchronize(backend)
+end
+
+@kernel function KineticEnergyCell_P1!(tmp,
+                                       @Const(VecEdge),
+                                       @Const(dvEdge), 
+                                       @Const(dcEdge))
+
+    iEdge, k = @index(Global, NTuple)
+    @inbounds tmp[k,iEdge] = VecEdge[k,iEdge] * VecEdge[k,iEdge] *
+                             0.5 * dvEdge[iEdge] * dcEdge[iEdge] # AreaEdge
+    @synchronize()
+end
+
+@kernel function KineticEnergyCell_P2!(KineticEnergyCell,
+                                       @Const(tmp),
+                                       @Const(nEdgesOnCell),
+                                       @Const(edgesOnCell),
+                                       @Const(areaCell))
+    iCell, k = @index(Global, NTuple)
+
+    KineticEnergyCell[k,iCell] = 0.0
+
+    # loop over number of edges in primary cell
+    for i in 1:nEdgesOnCell[iCell]
+        @inbounds iEdge = edgesOnCell[i,iCell]
+        @inbounds KineticEnergyCell[k,iCell] += tmp[k,iEdge] #* 0.5
+    end
+
+    KineticEnergyCell[k,iCell] /= areaCell[iCell] * 2.0
+    @synchronize()
 end
