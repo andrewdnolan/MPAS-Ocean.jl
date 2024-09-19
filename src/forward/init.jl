@@ -4,12 +4,11 @@ function ocn_init(Config_filepath; backend=KA.CPU())
     
     # read the configuration file 
     Config = ConfigRead(Config_filepath)
-
+    
     #TO DO: Read constants ?? 
 
     # setup the mesh 
     Mesh = ocn_setup_mesh(Config; backend=backend)
-
     # setup clock 
     Clock = ocn_setup_clock(Config)
     
@@ -30,6 +29,16 @@ function ocn_init(Config_filepath; backend=KA.CPU())
     return Setup, Diag, Tend, Prog
 end 
 
+function ocn_init_shadows(Prog, Diag, Tend; backend=KA.CPU())
+
+    d_Prog = PrognosticVars(zeros(Float64, size(Prog.ssh)),
+                            zeros(Float64, size(Prog.normalVelocity)),
+                            zeros(Float64, size(Prog.layerThickness)),
+                            1)
+
+    return d_Prog
+end
+
 
 function ocn_setup_mesh(Config::GlobalConfig; backend=KA.CPU())
     # get mesh section of the streams file
@@ -38,11 +47,11 @@ function ocn_setup_mesh(Config::GlobalConfig; backend=KA.CPU())
     mesh_fp = ConfigGet(meshConfig, "filename_template")
     # read the inut mesh from the configuartion file 
     # NOTE: This might be a restart file based on config options 
-
+    
     h_mesh = ReadHorzMesh(mesh_fp; backend=backend)
     v_mesh = VerticalMesh(mesh_fp, h_mesh; backend=backend)
 
-    Mesh(h_mesh, v_mesh)
+    return Mesh(h_mesh, v_mesh)
 end 
 
 function ocn_setup_clock(Config::GlobalConfig)
@@ -98,3 +107,21 @@ function ocn_setup_clock(Config::GlobalConfig)
     return clock
 end 
 
+# Helper function for setting the clock, simulationAlarm, and outputAlarm
+function ocn_init_alarms(Setup)
+    mesh = Setup.mesh
+    
+    # this is hardcoded for now, but should really be set accordingly in the 
+    # yaml file
+    #dt = floor(3.0 * mean(mesh.dcEdge) / 1e3)
+    dcEdge = mesh.HorzMesh.Edges.dcEdge
+    dt = floor(2 * (mean(dcEdge) / 1e3) * mean(dcEdge) / 200e3) 
+    changeTimeStep!(Setup.timeManager, Second(dt))
+    
+    clock = Setup.timeManager
+    
+    simulationAlarm = clock.alarms["simulation_end"]
+    outputAlarm = clock.alarms["outputAlarm"]
+
+    return clock, simulationAlarm, outputAlarm
+end

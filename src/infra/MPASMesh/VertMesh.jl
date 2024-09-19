@@ -11,6 +11,9 @@ mutable struct VerticalMesh{I, IV, FV, AL}
     # var: Layer thickness when the ocean is at rest [m]
     # dim: (nVertLevels, nCells)
     restingThickness::FV
+    # var: Total thickness when the ocean is at rest [m]
+    # dim: (1, nCells)
+    restingThicknessSum::FV
 end
 
 mutable struct ActiveLevels{IV}
@@ -26,14 +29,14 @@ end
 ActiveLevels constructor for a nVertLevel stacked *periodic* meshes
 """
 function ActiveLevels(dim, eltype, backend, nVertLevels)
-    Top = KA.ones(backend, eltype, dim) .* eltype(nVertLevels)
-    Bot = KA.ones(backend, eltype, dim) .* eltype(nVertLevels)
+    Top = KA.ones(backend, eltype, dim) #.* eltype(nVertLevels)
+    Bot = KA.ones(backend, eltype, dim) #.* eltype(nVertLevels)
 
-    ActiveLevels(Top, Bot)
+    return ActiveLevels(Top, Bot)
 end
 
 function ActiveLevels{Edge}(mesh; backend=KA.CPU(), nVertLevels=1)
-    ActiveLevels(mesh.Edges.nEdges, Int32, backend, nVertLevels)
+    return ActiveLevels(mesh.Edges.nEdges, Int32, backend, nVertLevels)
 end
 
 function ActiveLevels{Vertex}(mesh; backend=KA.CPU(), nVertLevels=1)
@@ -47,12 +50,12 @@ function VerticalMesh(mesh_fp, mesh; backend=KA.CPU())
     if uppercase(ds.attrib["is_periodic"]) != "YES"
         error("Support for non-periodic meshes is not yet implemented")
     end
-
+    
     nVertLevels = ds.dim["nVertLevels"]
     minLevelCell = ds["minLevelCell"][:]
     maxLevelCell = ds["maxLevelCell"][:]
     restingThickness = ds["restingThickness"][:,:,1]
-
+    
     # check that the vertical mesh is stacked 
     if !all(maxLevelCell .== nVertLevels)
         @error """ (Vertical Mesh Initializaton)\n
@@ -61,18 +64,21 @@ function VerticalMesh(mesh_fp, mesh; backend=KA.CPU())
                """
     end
 
-
+    
     ActiveLevelsEdge = ActiveLevels{Edge}(mesh; backend=backend,
                                           nVertLevels=nVertLevels)
     ActiveLevelsVertex = ActiveLevels{Vertex}(mesh; backend=backend, 
                                               nVertLevels=nVertLevels)
+
+    restingThicknessSum = sum(restingThickness; dims=1)
 
     VerticalMesh(nVertLevels,
                  Adapt.adapt(backend, minLevelCell),
                  Adapt.adapt(backend, maxLevelCell),
                  ActiveLevelsEdge,
                  ActiveLevelsVertex, 
-                 Adapt.adapt(backend, restingThickness))
+                 Adapt.adapt(backend, restingThickness),
+                 Adapt.adapt(backend, restingThicknessSum))
 end
 
 """
@@ -90,7 +96,8 @@ function VerticalMesh(mesh; nVertLevels=1, backend=KA.CPU())
     minLevelCell = KA.ones(backend, Int32, nCells)
     maxLevelCell = KA.ones(backend, Int32, nCells) .* Int32(nVertLevels)
     # unit thickness water column, irrespective of how many vertical levels
-    restingThickness = KA.ones(backend, Float64, nCells)
+    restingThickness    = KA.ones(backend, Float64, nCells)
+    restingThicknessSum = KA.ones(backend, Float64, nCells) # MIGHT NEED TO CHANGE THIS
 
     ActiveLevelsEdge = ActiveLevels{Edge}(mesh; backend=backend,
                                           nVertLevels=nVertLevels)
@@ -105,7 +112,8 @@ function VerticalMesh(mesh; nVertLevels=1, backend=KA.CPU())
                  maxLevelCell,
                  ActiveLevelsEdge,
                  ActiveLevelsVertex, 
-                 restingThickness)
+                 restingThickness,
+                 restingThicknessSum)
 end
 
 function Adapt.adapt_structure(backend, x::ActiveLevels)
@@ -119,6 +127,7 @@ function Adapt.adapt_structure(backend, x::VerticalMesh)
                         Adapt.adapt(backend, x.maxLevelCell),
                         Adapt.adapt(backend, x.maxLevelEdge),
                         Adapt.adapt(backend, x.maxLevelVertex),
-                        Adapt.adapt(backend, x.restingThickness))
+                        Adapt.adapt(backend, x.restingThickness),
+                        Adapt.adapt(backend, x.restingThicknessSum))
 end
 

@@ -9,16 +9,13 @@ import Adapt
 import Downloads
 import KernelAbstractions as KA
 
-# include the testcase definition utilities
-include("../utilities.jl")
-
 mesh_url = "https://gist.github.com/mwarusz/f8caf260398dbe140d2102ec46a41268/raw/e3c29afbadc835797604369114321d93fd69886d/PlanarPeriodic48x48.nc"
 mesh_fn  = "MokaMesh.nc"
 
 Downloads.download(mesh_url, mesh_fn)
 
-backend = KA.CPU()
-#backend = CUDABackend();
+#backend = KA.CPU()
+backend = CUDABackend();
 
 # Read in the purely horizontal doubly periodic testing mesh
 HorzMesh = ReadHorzMesh(mesh_fn; backend=backend)
@@ -65,7 +62,9 @@ VecEdge = 𝐅ₑ(setup, PlanarTest)
 divAnn = div𝐅(setup, PlanarTest)
 # Numerical divergence using KernelAbstractions operator
 divNum = KA.zeros(backend, Float64, (nVertLevels, nCells))
-@allowscalar DivergenceOnCell!(divNum, VecEdge, MPASMesh; backend=backend)
+temp   = KA.zeros(backend, Float64, (nVertLevels, nEdges))
+
+DivergenceOnCell!(divNum, VecEdge, temp, MPASMesh; backend=backend)
 
 divError = ErrorMeasures(divNum, divAnn, HorzMesh, Cell)
 

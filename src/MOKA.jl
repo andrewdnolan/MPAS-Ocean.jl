@@ -1,6 +1,7 @@
 module MOKA
     
-    export ocn_init, isRinging, advance!, ocn_timestep, changeTimeStep!, reset!
+    export ocn_run_loop, ocn_init, ocn_init_shadows, ocn_init_alarms, isRinging, advance!, ocn_timestep, changeTimeStep!, reset!
+    export mycopyto!
     export RungeKutta4, ForwardEuler 
     export write_netcdf
     
@@ -11,7 +12,10 @@ module MOKA
     # Operators
     export GradientOnEdge!,
            DivergenceOnCell!, 
-           CurlOnVertex!
+           CurlOnVertex!,
+           ZeroOutVector!
+
+    export mycopyto!
     
 
     using Dates, YAML, NCDatasets, UnPack, Statistics, Logging, KernelAbstractions
@@ -38,6 +42,7 @@ module MOKA
 
     include("forward/init.jl")
     include("forward/time_integration.jl")
+    include("forward/run_loop.jl")
     
     include("Architectures.jl")
     

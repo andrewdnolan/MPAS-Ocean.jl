@@ -19,7 +19,8 @@ function horizontal_advection_tendency!(Tend::TendencyVars,
     @unpack tendLayerThickness = Tend 
 
     # initialize the kernel
-    kernel! = thicknessFluxDivOnCell!(backend)
+    nthreads = 50
+    kernel!  = thicknessFluxDivOnCell!(backend, nthreads)
     # use kernel to compute divergence of the thickness flux
     kernel!(tendLayerThickness,
             thicknessFlux,
@@ -62,6 +63,7 @@ end
         for k in 1:maxLevelEdgeTop[iEdge]
             tendency[k,iCell] += thicknessFlux[k,iEdge] * dvEdge[iEdge] *
                                  edgeSignOnCell[i,iCell] * invArea
+            #tendency[k,iCell] = thicknessFlux[k,iEdge]
         end
     end
 end

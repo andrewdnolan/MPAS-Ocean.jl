@@ -3,11 +3,10 @@ module normalVelocity
 export computeNormalVelocityTendency!
 
 using UnPack
-using KernelAbstractions 
-using CUDA: @allowscalar
-using MOKA: TendencyVars, PrognosticVars, DiagnosticVars, Mesh, GlobalConfig
+using KernelAbstractions
+using MOKA: TendencyVars, PrognosticVars, DiagnosticVars, Mesh, GlobalConfig, ZeroOutVector!
 
-const KA = KernelAbstractions
+#const KA = KernelAbstractions
 
 # include tendecy methods
 include("pressure_gradient.jl")
@@ -24,31 +23,33 @@ function computeNormalVelocityTendency!(Tend::TendencyVars,
                                         Diag::DiagnosticVars, 
                                         Mesh::Mesh, 
                                         Config::GlobalConfig;
-                                        backend = KA.CPU())
+                                        backend = CUDABackend())
     
-    # WARNING: this is not performant and should be fixed
-    Tend.tendNormalVelocity .= 0.0
-
+    nthreads = 50
+    kernel! = ZeroOutVector!(backend, nthreads)
+    kernel!(Tend.tendNormalVelocity, Mesh.HorzMesh.Edges.nEdges, ndrange=Mesh.HorzMesh.Edges.nEdges)
     #=
     # hard code the pressure gradient as SSH Gradient for now, in the future 
     # we will want some functionality to parse config (e.g.):
     #
     #       pGradType = parsing_function(Config)       
     =#       
-    pGradType = sshGradient 
+    pGradType = sshGradient
 
     # compute pressure gradient tendency on requested backend
-    @allowscalar pressure_gradient_tendency!(
+    pressure_gradient_tendency!(
         Tend, Prog, Diag, Mesh, pGradType; backend = backend
        )
+    
     
     # hard coded type for now, see above about inquiring into the config struct
     coriolisType = linearCoriolis
     
     # compute horizontal advection and corilois tendency on requested backend
-    @allowscalar horizontal_advection_and_coriolis_tendency!(
+    horizontal_advection_and_coriolis_tendency!(
         Tend, Prog, Diag, Mesh, coriolisType; backend = backend
        )
+    
 end
 
 end

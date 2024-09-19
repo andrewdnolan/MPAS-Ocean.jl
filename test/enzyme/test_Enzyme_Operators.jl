@@ -12,136 +12,218 @@ import Adapt
 import Downloads
 import KernelAbstractions as KA
 
-# include the testcase definition utilities
-include("../utilities.jl")
-
 mesh_url = "https://gist.github.com/mwarusz/f8caf260398dbe140d2102ec46a41268/raw/e3c29afbadc835797604369114321d93fd69886d/PlanarPeriodic48x48.nc"
 mesh_fn  = "MokaMesh.nc"
 
 Downloads.download(mesh_url, mesh_fn)
 
-backend = KA.CPU()
-#backend = CUDABackend();
+let 
+backends = [KA.CPU(), CUDABackend()]
+for backend in backends
+    @show backend
+    # Read in the purely horizontal doubly periodic testing mesh
+    HorzMesh = ReadHorzMesh(mesh_fn; backend=backend)
+    # Create a dummy vertical mesh from the horizontal mesh
+    VertMesh = VerticalMesh(HorzMesh; nVertLevels=1, backend=backend)
+    # Create a the full Mesh strucutre 
+    MPASMesh = Mesh(HorzMesh, VertMesh)
 
-# Read in the purely horizontal doubly periodic testing mesh
-HorzMesh = ReadHorzMesh(mesh_fn; backend=backend)
-# Create a dummy vertical mesh from the horizontal mesh
-VertMesh = VerticalMesh(HorzMesh; nVertLevels=1, backend=backend)
-# Create a the full Mesh strucutre 
-MPASMesh = Mesh(HorzMesh, VertMesh)
+    setup = TestSetup(MPASMesh, PlanarTest; backend=backend)
 
-setup = TestSetup(MPASMesh, PlanarTest; backend=backend)
+    nEdges = HorzMesh.Edges.nEdges
+    nCells = HorzMesh.PrimaryCells.nCells
+    nVertLevels = VertMesh.nVertLevels
 
-nEdges = HorzMesh.Edges.nEdges
-nCells = HorzMesh.PrimaryCells.nCells
-nVertLevels = VertMesh.nVertLevels
+    ###
+    ### Here, we will test Enzyme AD on our kernels
+    ###
 
-###
-### Here, we will test Enzyme AD on our kernels
-###
-
-# As a clean / easy to read test, let's create an outer function that measures the squared norm of the gradient computed by kernel:
-function gradient_normSq(grad, hᵢ, mesh::Mesh; backend=KA.CPU())
-    GradientOnEdge!(grad, hᵢ, mesh::Mesh; backend=backend)
-
-    normSq = 0.0
-    N = size(grad)
-    for i = 1:N[2]
-        normSq += grad[i]^2
+    # As a clean / easy to read test, let's create an outer function that measures the squared norm of the gradient computed by kernel:
+    function gradient_test(grad, hᵢ, mesh::Mesh, backend)
+        GradientOnEdge!(grad, hᵢ, mesh::Mesh; backend=backend)
     end
 
-    return normSq
-end
+    # Let's recreate all the variables:
+    gradNum = KA.zeros(backend, Float64, (nVertLevels, nEdges))
+    Scalar  = h(setup, PlanarTest)
 
-# Let's recreate all the variables:
-gradNum = KA.zeros(backend, Float64, (nVertLevels, nEdges))
-Scalar  = h(setup, PlanarTest)
+    d_gradNum  = KA.zeros(backend, Float64, (nVertLevels, nEdges))
+    d_Scalar   = KA.zeros(backend, eltype(setup.xᶜ), (nVertLevels, nCells))
+    d_MPASMesh = Enzyme.make_zero(MPASMesh)
 
-d_gradNum  = KA.zeros(backend, Float64, (nVertLevels, nEdges))
-d_Scalar   = KA.zeros(backend, eltype(setup.xᶜ), (nVertLevels, nCells))
-d_MPASMesh = Enzyme.make_zero(MPASMesh)
+    kBegin = 1
+    kEnd = 1
+    @allowscalar d_gradNum[kEnd] = 1.0
 
-d_normSq = autodiff(Enzyme.Reverse,
-                    gradient_normSq,
-                    Duplicated(gradNum, d_gradNum),
-                    Duplicated(Scalar, d_Scalar),
-                    Duplicated(MPASMesh, d_MPASMesh))
+    d_normSq = autodiff(Enzyme.Reverse,
+                        gradient_test,
+                        Duplicated(gradNum, d_gradNum),
+                        Duplicated(Scalar, d_Scalar),
+                        Duplicated(MPASMesh, d_MPASMesh),
+                        Const(backend))
+    @allowscalar dnorm_dscalar_rev = d_Scalar[kBegin]
 
-#@show d_gradNum
-#@show d_Scalar
+    # Read in the purely horizontal doubly periodic testing mesh
+    HorzMesh = ReadHorzMesh(mesh_fn; backend=backend)
+    # Create a dummy vertical mesh from the horizontal mesh
+    VertMesh = VerticalMesh(HorzMesh; nVertLevels=1, backend=backend)
+    # Create a the full Mesh strucutre 
+    MPASMesh = Mesh(HorzMesh, VertMesh)
 
-# For comparison, let's compute the derivative by hand for a given scalar entry:
-gradNum = KA.zeros(backend, Float64, (nVertLevels, nEdges))
-Scalar  = h(setup, PlanarTest)
-ScalarP = deepcopy(Scalar)
-ScalarM = deepcopy(Scalar)
-
-ϵ = 0.1
-k = 1837
-ScalarP[k] = ScalarP[k] + abs(ScalarP[k]) * ϵ
-ScalarM[k] = ScalarM[k] - abs(ScalarM[k]) * ϵ
-
-normSqP = gradient_normSq(gradNum, ScalarP, MPASMesh)
-gradNum = KA.zeros(backend, Float64, (nVertLevels, nEdges))
-normSqM = gradient_normSq(gradNum, ScalarM, MPASMesh)
-
-dnorm_dscalar_fd = (normSqP - normSqM) / (ScalarP[k] - ScalarM[k])
-dnorm_dscalar    = d_Scalar[k]
-
-@info """ (gradients)\n
-For edge global index $k
-Enzyme computed $dnorm_dscalar
-Finite differences computed $dnorm_dscalar_fd
-"""
-###
-### Now let's test divergence:
-###
-function divergence_normSq(div, 𝐅ₑ, mesh::Mesh; backend=KA.CPU())
-    DivergenceOnCell!(div, 𝐅ₑ, mesh::Mesh; backend=backend)
-
-    normSq = 0.0
-    N = size(div)
-    for i = 1:N[2]
-        normSq += div[i]^2
+    setup = TestSetup(MPASMesh, PlanarTest; backend=backend)
+    fill!(d_gradNum, 0.0)
+    fill!(d_Scalar, 0.0)
+    d_MPASMesh = Enzyme.make_zero(MPASMesh)
+    @allowscalar d_Scalar[kBegin] = 1.0
+    fwd_mode = true
+    # Forward mode on CUDA fails with Enzyme crash
+    try
+        d_normSq = autodiff(Enzyme.Forward,
+                            gradient_test,
+                            Duplicated(gradNum, d_gradNum),
+                            Duplicated(Scalar, d_Scalar),
+                            Duplicated(MPASMesh, d_MPASMesh),
+                            Const(backend))
+    catch
+        fwd_mode = false
+    end
+    
+    if backend == CUDABackend()
+        @test fwd_mode
+    else 
+        @test fwd_mode
     end
 
-    return normSq
+    @allowscalar dnorm_dscalar_fwd = d_gradNum[kEnd]
+
+
+    HorzMeshFD = ReadHorzMesh(mesh_fn; backend=backend)
+    MPASMeshFD = Mesh(HorzMeshFD, VertMesh)
+    ϵ = 1e-8
+
+    # For comparison, let's compute the derivative by hand for a given scalar entry:
+    gradNumFD = KA.zeros(backend, Float64, (nVertLevels, nEdges))
+    ScalarFD  = h(setup, PlanarTest)
+    ScalarP = deepcopy(ScalarFD)
+    ScalarM = deepcopy(ScalarFD)
+    @allowscalar ScalarP[kBegin] = ScalarP[kBegin] + abs(ScalarP[kBegin]) * ϵ
+    @allowscalar ScalarM[kBegin] = ScalarM[kBegin] - abs(ScalarM[kBegin]) * ϵ
+
+    gradient_test(gradNumFD, ScalarP, MPASMeshFD, backend)
+    @allowscalar normP = gradNumFD[kEnd]
+    gradNumFD = KA.zeros(backend, Float64, (nVertLevels, nEdges))
+    gradient_test(gradNumFD, ScalarM, MPASMeshFD, backend)
+    @allowscalar normM = gradNumFD[kEnd]
+
+    @allowscalar dnorm_dscalar_fd = (normP - normM) / (ScalarP[kBegin] - ScalarM[kBegin])
+
+    #@allowscalar @show normP, normM, ScalarP[k], ScalarM[k]
+
+    @info """ (gradients)\n
+    For edge global input $kBegin, output $kEnd
+    Enzyme computed $dnorm_dscalar_rev
+    Finite differences computed $dnorm_dscalar_fd
+    """
+    @test isapprox(dnorm_dscalar_rev, dnorm_dscalar_fd, atol=1e-6)
+    if backend == CUDABackend()
+        @test_broken isapprox(dnorm_dscalar_fwd, dnorm_dscalar_fd, atol=1e-6)
+    else
+        @test isapprox(dnorm_dscalar_fwd, dnorm_dscalar_fd, atol=1e-6)
+    end
+
+    ###
+    ### Now let's test divergence:
+    ###
+    function divergence_test(div, 𝐅ₑ, temp, mesh::Mesh, backend)
+        DivergenceOnCell!(div, 𝐅ₑ, temp, mesh::Mesh; backend=backend, nthreads=64)
+    end
+
+    @show nEdges, nCells
+
+    divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
+    VecEdge = 𝐅ₑ(setup, PlanarTest)
+    temp    = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
+
+    d_divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
+    d_VecEdge = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
+    d_temp    = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
+
+    kBegin = 2
+    kEnd = 1
+    @allowscalar d_divNum[kEnd] = 1.0
+
+    d_normSq = autodiff(Enzyme.Reverse,
+                        divergence_test,
+                        Duplicated(deepcopy(divNum), d_divNum),
+                        Duplicated(deepcopy(VecEdge), d_VecEdge),
+                        Duplicated(deepcopy(temp), d_temp),
+                        Duplicated(deepcopy(MPASMesh), d_MPASMesh),
+                        Const(backend))
+    @allowscalar dnorm_dvecedge_rev    = d_VecEdge[kBegin]
+    # Read in the purely horizontal doubly periodic testing mesh
+    HorzMesh = ReadHorzMesh(mesh_fn; backend=backend)
+    # Create a dummy vertical mesh from the horizontal mesh
+    VertMesh = VerticalMesh(HorzMesh; nVertLevels=1, backend=backend)
+    # Create a the full Mesh strucutre 
+    MPASMesh = Mesh(HorzMesh, VertMesh)
+
+    setup = TestSetup(MPASMesh, PlanarTest; backend=backend)
+    fill!(d_divNum, 0.0)
+    fill!(d_VecEdge, 0.0)
+    fill!(d_temp, 0.0)
+    d_MPASMesh = Enzyme.make_zero(MPASMesh)
+
+    @allowscalar d_VecEdge[kBegin] = 1.0
+    # Forward mode fails on CPU and CUDA with "Enzyme: unhandled forward for jl_f__svec_ref"
+    fwd_mode = false
+    try
+        d_normSq = autodiff(Enzyme.Forward,
+                            divergence_test,
+                            Duplicated(divNum, d_divNum),
+                            Duplicated(VecEdge, d_VecEdge),
+                            Duplicated(temp, d_temp),
+                            Duplicated(MPASMesh, d_MPASMesh),
+                            Const(backend))
+        fwd_mode = true
+    catch e
+        fwd_mode = false
+    end
+    @test fwd_mode
+
+    @allowscalar dnorm_dvecedge_fwd = d_divNum[kEnd]
+    HorzMeshFD = ReadHorzMesh(mesh_fn; backend=backend)
+    MPASMeshFD = Mesh(HorzMeshFD, VertMesh)
+    ϵ = 1e-8
+    # For comparison, let's compute the derivative by hand for a given VecEdge entry:
+    VecEdgeP = 𝐅ₑ(setup, PlanarTest)
+    VecEdgeM = 𝐅ₑ(setup, PlanarTest)
+
+    @allowscalar VecEdgeP[kBegin] = VecEdgeP[kBegin] + abs(VecEdgeP[kBegin]) * ϵ
+    @allowscalar VecEdgeM[kBegin] = VecEdgeM[kBegin] - abs(VecEdgeM[kBegin]) * ϵ
+
+    divNumFD = KA.zeros(backend, Float64, (nVertLevels, nCells))
+    tempFD   = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
+    divergence_test(divNumFD, VecEdgeP, tempFD, MPASMeshFD, backend)
+    @allowscalar testP = divNumFD[kEnd]
+
+    divNumFD = KA.zeros(backend, Float64, (nVertLevels, nCells))
+    tempFD   = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
+    divergence_test(divNumFD, VecEdgeM, tempFD, MPASMeshFD, backend)
+    @allowscalar testM = divNumFD[kEnd]
+
+    @allowscalar dnorm_dvecedge_fd = (testP - testM) / (VecEdgeP[kBegin] - VecEdgeM[kBegin])
+
+    @info """ (divergence)\n
+    For cell global input $kBegin, output $kEnd
+    Enzyme computed $dnorm_dvecedge_rev
+    Finite differences computed $dnorm_dvecedge_fd
+    """
+    @test isapprox(dnorm_dvecedge_rev, dnorm_dvecedge_fd, atol=1e-6)
+    if backend == KA.CPU()
+        @test isapprox(dnorm_dvecedge_fwd, dnorm_dvecedge_fd, atol=1e-6)
+    elseif backend == CUDABackend()
+        @test isapprox(dnorm_dvecedge_fwd, dnorm_dvecedge_fd, atol=1e-6)
+    end
 end
 
-divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
-VecEdge = 𝐅ₑ(setup, PlanarTest)
-
-d_divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
-d_VecEdge = KA.zeros(backend, eltype(setup.EdgeNormalX), (nVertLevels, nEdges))
-
-d_normSq = autodiff(Enzyme.Reverse,
-                    divergence_normSq,
-                    Duplicated(divNum, d_divNum),
-                    Duplicated(VecEdge, d_VecEdge),
-                    Duplicated(MPASMesh, d_MPASMesh))
-
-# For comparison, let's compute the derivative by hand for a given VecEdge entry:
-VecEdgeP = 𝐅ₑ(setup, PlanarTest)
-VecEdgeM = 𝐅ₑ(setup, PlanarTest)
-
-ϵ = 0.1
-k = 238
-VecEdgeP[k] = VecEdgeP[k] + abs(VecEdgeP[k]) * ϵ
-VecEdgeM[k] = VecEdgeM[k] - abs(VecEdgeM[k]) * ϵ
-
-VecEdgePk = VecEdgeP[k]
-VecEdgeMk = VecEdgeM[k]
-
-divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
-normSqP = divergence_normSq(divNum, VecEdgeP, MPASMesh)
-divNum  = KA.zeros(backend, Float64, (nVertLevels, nCells))
-normSqM = divergence_normSq(divNum, VecEdgeM, MPASMesh)
-
-dnorm_dvecedge_fd = (normSqP - normSqM) / (VecEdgePk - VecEdgeMk)
-dnorm_dvecedge    = d_VecEdge[k]
-
-@info """ (divergence)\n
-For cell global index $k
-Enzyme computed $dnorm_dvecedge
-Finite differences computed $dnorm_dvecedge_fd
-"""
+end

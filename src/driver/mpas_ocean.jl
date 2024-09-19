@@ -2,59 +2,51 @@ using Dates
 using CUDA
 using MOKA
 using Statistics
-using KernelAbstractions 
+using KernelAbstractions
+
+using CUDA: @allowscalar
+
+# Might need to remove these:
+#Enzyme.EnzymeRules.inactive_type(::Type{<:MOKA.ModelSetup}) = true
+#Enzyme.EnzymeRules.inactive_type(::Type{<:MOKA.Clock}) = true
 
 const KA=KernelAbstractions
 
 # file path to the config file. Should be parsed from the command line 
 #config_fp = "../../TestData/inertial_gravity_wave_100km.yml"
-config_fp = "/global/homes/a/anolan/MPAS-Ocean.jl/bare_minimum.yml"
+#config_fp = "/global/homes/a/anolan/MPAS-Ocean.jl/bare_minimum.yml"
+config_fp = "./config.yml"
 
 function ocn_run(config_fp)
-    
-    backend = KA.CPU()
-    #backend = CUDABackend()
 
+    #
+    # Setup for model
+    #
+    
+    println("Setting the backend...")
+    #backend = KA.CPU()
+    backend = CUDABackend()
+    @show backend
+    
     # Initialize the Model  
-    Setup, Diag, Tend, Prog = ocn_init(config_fp, backend = backend)
-    
-    mesh = Setup.mesh 
-    config = Setup.config
-    
-    # this is hardcoded for now, but should really be set accordingly in the 
-    # yaml file
-    #dt = floor(3.0 * mean(mesh.dcEdge) / 1e3)
-    dcEdge = mesh.HorzMesh.Edges.dcEdge
-    dt = floor(2 * (mean(dcEdge) / 1e3) * mean(dcEdge) / 200e3) 
-    changeTimeStep!(Setup.timeManager, Second(dt))
-    
-    clock = Setup.timeManager
-    
-    simulationAlarm = clock.alarms["simulation_end"]
-    outputAlarm = clock.alarms["outputAlarm"]
-    
-    global i = 0
-    # Run the model 
-    while !isRinging(simulationAlarm)
-    
-        advance!(clock)
-    
-        global i += 1 
-    
-        ocn_timestep(Prog, Diag, Tend, Setup, ForwardEuler; backend=backend)
-        #ocn_timestep(Prog, Diag, Tend, Setup, RungeKutta4)
-        
-        if isRinging(outputAlarm)
-            # should be doing i/o in here, using a i/o struct 
-            reset!(outputAlarm)
-        end
-    end 
+    Setup, Diag, Tend, Prog             = ocn_init(config_fp; backend = backend)
+    println("Initialized the model")
+    clock, simulationAlarm, outputAlarm = ocn_init_alarms(Setup)
+    println("Initialized the clock.")
+    timestep = KA.zeros(backend, Float64, (1,))
+    @allowscalar timestep[1] = convert(Float64, Dates.value(Second(Setup.timeManager.timeStep)))
+
+    ocn_run_loop(timestep, Prog, Diag, Tend, Setup, ForwardEuler, clock, simulationAlarm, outputAlarm; backend=backend)
+
+    #
+    # Writing to outputs
+    #
     
     # Only suport i/o at the end of the simulation for now 
     write_netcdf(Setup, Diag, Prog)
     
     backend = get_backend(Tend.tendNormalVelocity)
-    arch = typeof(backend) <: KA.GPU ? "GPU" : "CPU" 
+    arch = typeof(backend) <: KA.GPU ? "GPU" : "CPU"
 
     println("Moka.jl ran on $arch")
     println(clock.currTime)
