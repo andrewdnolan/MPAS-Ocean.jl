@@ -111,10 +111,9 @@ function explicit_bottom_drag_tendency!(Tend::TendencyVars,
     # get needed fields from diagnostics structure
     @unpack kineticEnergyCell = Diag
     
-    # TO DO: Don't use `@view` b/c not performant on GPU's
     # get the current timelevel of prognostic variables
-    normalVelocity = @view Prog.normalVelocity[:,:,end]
-    layerThickness = @view Prog.layerThickness[:,:,end]
+    normalVelocity = Prog.normalVelocity[end]
+    layerThickness = Prog.layerThickness[end]
 
     # initialize the kernel
     kernel! = explicit_bottom_drag_tendency_kernel!(backend)
