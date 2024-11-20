@@ -9,10 +9,7 @@ import Adapt
 import Downloads
 import KernelAbstractions as KA
 
-mesh_url = "https://gist.github.com/mwarusz/f8caf260398dbe140d2102ec46a41268/raw/e3c29afbadc835797604369114321d93fd69886d/PlanarPeriodic48x48.nc"
-mesh_fn  = "MokaMesh.nc"
-
-Downloads.download(mesh_url, mesh_fn)
+mesh_fn = DownloadMesh(PlanarTest)
 
 #backend = KA.CPU()
 backend = CUDABackend();
