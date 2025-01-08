@@ -1,6 +1,3 @@
-using OffsetArrays
-import Adapt
-
 mutable struct VerticalMesh{I, IV, FV, AL}
     nVertLevels::I
 
@@ -80,18 +77,21 @@ function ActiveLevels{Vertex}(maxLevelCell, h_mesh; backend=KA.CPU())
     return ActiveLevels(Top, Bot)
 end
 
-function VerticalMesh(mesh_fp, mesh; backend=KA.CPU())
+
+function VerticalMesh(mesh_ds, mesh; backend=KA.CPU())
     
-    ds = NCDataset(mesh_fp, "r")
-    
+    # if no vertical info is present, then create a single layered mesh
+    if !haskey(mesh_ds.dim, "nVertLevels")
+        return VerticalMesh(mesh)
+    else
+        nVertLevels = mesh_ds.dim["nVertLevels"]
+    end
+
     nCells = mesh.PrimaryCells.nCells
     # Pre-allocate zero indexed offsetarrays 
     maxLevelCell = padded_index_array(nCells; backend=backend)
-
-    nVertLevels = ds.dim["nVertLevels"]
-    # ....
-    maxLevelCell[1:end] = ds["maxLevelCell"][:]
-    restingThickness = ds["restingThickness"][:,:,1]
+    # Read in the maximum level for all interior indices
+    maxLevelCell[1:end] = mesh_ds["maxLevelCell"][:]
     
     # check that the vertical mesh is stacked 
     if !all(maxLevelCell[1:end] .== nVertLevels)
@@ -101,10 +101,10 @@ function VerticalMesh(mesh_fp, mesh; backend=KA.CPU())
                """
     end
 
-    
     ActiveLevelsEdge = ActiveLevels{Edge}(maxLevelCell, mesh; backend=backend)
     ActiveLevelsVertex = ActiveLevels{Vertex}(maxLevelCell, mesh; backend=backend)
 
+    restingThickness = mesh_ds["restingThickness"][:,:,1]
     restingThicknessSum = sum(restingThickness; dims=1)
 
     VerticalMesh(nVertLevels,

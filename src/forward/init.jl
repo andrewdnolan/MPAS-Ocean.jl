@@ -8,7 +8,7 @@ function ocn_init(Config_filepath; backend=KA.CPU())
     #TO DO: Read constants ?? 
 
     # setup the mesh 
-    Mesh = ocn_setup_mesh(Config; backend=backend)
+    Mesh = Mesh(Config; backend=backend)
     # setup clock 
     Clock = ocn_setup_clock(Config)
     
@@ -38,20 +38,6 @@ function ocn_init_shadows(Prog, Diag, Tend; backend=KA.CPU())
 
     return d_Prog
 end
-
-
-function ocn_setup_mesh(Config::GlobalConfig; backend=KA.CPU())
-    # get mesh section of the streams file
-    meshConfig = ConfigGet(Config.streams, "mesh")
-    # get mesh filepath from streams section
-    mesh_fp = ConfigGet(meshConfig, "filename_template")
-    # read the inut mesh from the configuartion file 
-    # NOTE: This might be a restart file based on config options 
-    # ---------------------------------------------------
-    # TODO: read `nVertLevels` from the config file
-    # ---------------------------------------------------
-    return Mesh(mesh_fp; nVertLevels=1, backend=backend)
-end 
 
 function ocn_setup_clock(Config::GlobalConfig)
 

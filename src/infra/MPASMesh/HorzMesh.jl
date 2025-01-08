@@ -1,12 +1,3 @@
-using CUDA
-using UnPack
-using Accessors
-using NCDatasets
-using StructArrays
-
-import Adapt
-import KernelAbstractions as KA
-
 ###
 ### Types 
 ###
@@ -169,7 +160,7 @@ end
 
 stack(arr, N) = [Tuple(arr[:,i]) for i in 1:N]
 
-function readPrimaryMesh(ds)
+function readPrimaryMesh(ds::NCDataset)
     
     # get dimension info 
     nCells  = ds.dim["nCells"] 
@@ -211,7 +202,7 @@ function readPrimaryMesh(ds)
                  edgeSignOnCell = edgeSignOnCell)
 end
 
-function readDualMesh(ds)
+function readDualMesh(ds::NCDataset)
 
     # get dimension info 
     nVertices = ds.dim["nVertices"] 
@@ -250,21 +241,11 @@ function readDualMesh(ds)
               areaTriangle = areaTriangle)
 end 
 
-function readEdgeInfo(ds; nVertLevels = 1)
+function readEdgeInfo(ds::NCDataset)
 
     # dimension data
     nEdges = ds.dim["nEdges"]
     
-    # check that the requested `nVertLevels` is consistent with mesh file
-    if haskey(ds.dim, "nVertLevels") && ds.dim["nVertLevels"] != nVertLevels
-        @warn """Requested nVertLevels does not match the number of vertical \n
-                 layers in the mesh file. 
-              """ 
-    end
-
-    # base meshes don't neccessarily have vertical levels
-    nVertLevels = haskey(ds.dim, "nVertLevels") ? ds.dim["nVertLevels"] : nVertLevels
-
     # coordinate data 
     xᵉ = ds["xEdge"][:]
     yᵉ = ds["yEdge"][:]
@@ -289,7 +270,10 @@ function readEdgeInfo(ds; nVertLevels = 1)
 
     angleEdge = ds["angleEdge"][:]
     
-    edgeMask = zeros(Int32, (nVertLevels, nEdges))
+    # edgeMask is created with one vertical layer, irrespecitve of how many
+    # vertical layers are in the mesh. A properly shaped edgeMask will be
+    # created by `setBoundaryMask!`, after the vertical mesh is initialized
+    edgeMask = zeros(Int32, (1, nEdges))
 
     dvEdge = ds["dvEdge"][:]
     dcEdge = ds["dcEdge"][:]
@@ -354,11 +338,14 @@ function signIndexField!(dualMesh::DualCells, edges::Edges)
     @reset dualMesh.edgeSignOnVertex = edgeSignOnVertex
 end 
 
-function setBoundaryMask!(edges::Edges, v_mesh)
+function setBoundaryMask!(edges::Edges, VertMesh)
     
-    @unpack Bot, Top = v_mesh.maxLevelEdge
-    @unpack nEdges, edgeMask = edges
+    nEdges = edges.nEdges
+    nVertLevels = VertMesh.nVertLevels
+    @unpack Bot, Top = VertMesh.maxLevelEdge
     
+    # allocate a new edgeMask array, now with the proper numbe of vert levels
+    edgeMask = zeros(Int32, (nVertLevels, nEdges))
     for iEdge in 1:nEdges, k in Bot[iEdge]:Top[iEdge]
         edgeMask[k, iEdge] = 1.0
     end
@@ -367,13 +354,11 @@ function setBoundaryMask!(edges::Edges, v_mesh)
     @reset edges.edgeMask = edgeMask
 end
 
-function ReadHorzMesh(meshPath::String; nVertLevels=1, backend=KA.CPU())
+function ReadHorzMesh(meshDataset::NCDataset; backend=KA.CPU())
     
-    ds = NCDataset(meshPath, "r", format=:netcdf4)
-
-    PrimaryMesh = readPrimaryMesh(ds)
-    DualMesh    = readDualMesh(ds)
-    edges       = readEdgeInfo(ds; nVertLevels=nVertLevels)
+    PrimaryMesh = readPrimaryMesh(meshDataset)
+    DualMesh    = readDualMesh(meshDataset)
+    edges       = readEdgeInfo(meshDataset)
     
     # set the edge sign on cells (primary mesh)
     signIndexField!(PrimaryMesh, edges)
@@ -383,10 +368,6 @@ function ReadHorzMesh(meshPath::String; nVertLevels=1, backend=KA.CPU())
     mesh = HorzMesh(PrimaryMesh, DualMesh, edges)
     
     # move the horizontal mesh struct to requested backend
-    # NOTE: this does not happen earlier (i.e. in constructors of PrimaryCells,
-    #       DualCells, Edges) b/c of the uninitialized fields in the mesh 
-    #       strucutres which are populated above. It's more efficent to have
-    #       those calculations happen on CPU (I think)
     Adapt.adapt_structure(backend, mesh)
 end
 
