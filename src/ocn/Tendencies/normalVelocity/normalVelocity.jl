@@ -4,7 +4,7 @@ export computeNormalVelocityTendency!
 
 using UnPack
 using KernelAbstractions
-using MOKA: TendencyVars, PrognosticVars, DiagnosticVars, Mesh, GlobalConfig, ZeroOutVector!
+using MOKA: TendencyVars, PrognosticVars, DiagnosticVars, ForcingVars, Mesh, GlobalConfig, ZeroOutVector!
 
 #const KA = KernelAbstractions
 
@@ -22,6 +22,7 @@ function computeNormalVelocityTendency!(Tend::TendencyVars,
                                         Prog::PrognosticVars,
                                         Diag::DiagnosticVars, 
                                         Mesh::Mesh, 
+                                        Forcing::ForcingVars,
                                         Config::GlobalConfig;
                                         backend = CUDABackend())
     
@@ -50,6 +51,10 @@ function computeNormalVelocityTendency!(Tend::TendencyVars,
         Tend, Prog, Diag, Mesh, coriolisType; backend = backend
        )
     
+    # add forcing 
+    velocity_forcing_tendency!(
+        Tend, Prog, Diag, Mesh, Forcing; backend = backend
+    )
 end
 
 end

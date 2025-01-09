@@ -5,15 +5,17 @@ function ocn_init(Config_filepath; backend=KA.CPU())
     # read the configuration file 
     Config = ConfigRead(Config_filepath)
     
-    #TO DO: Read constants ?? 
+    # setup clock 
+    Clock = ocn_setup_clock(Config)
 
     # setup the mesh 
     Mesh = Mesh(Config; backend=backend)
-    # setup clock 
-    Clock = ocn_setup_clock(Config)
     
     # return the model setup instance
     Setup = ModelSetup(Config, Mesh, Clock)
+
+    # read forcing, if present
+    Forcing = ForcingVars(Config, Mesh; backend=backend)
 
     # Prognostics should be intialized here, 
     # add option to read from input file (i.e. mesh) or from restrart
@@ -26,7 +28,7 @@ function ocn_init(Config_filepath; backend=KA.CPU())
 
     Tend = TendencyVars(Config, Mesh; backend=backend)
 
-    return Setup, Diag, Tend, Prog
+    return Setup, Diag, Tend, Prog, Forcing
 end 
 
 function ocn_init_shadows(Prog, Diag, Tend; backend=KA.CPU())
