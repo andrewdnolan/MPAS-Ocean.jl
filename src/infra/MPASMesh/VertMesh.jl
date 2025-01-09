@@ -23,7 +23,7 @@ mutable struct ActiveLevels{IV}
     Bot::IV
 end
 
-function padded_index_array(dimLength; backend=KA.CPU, eltype=Int32)
+function padded_index_array(dimLength; backend=KA.CPU(), eltype=Int32)
     OffsetArray(KA.zeros(backend, eltype, dimLength + 1), 0:dimLength)
 end
 
